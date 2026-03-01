@@ -231,6 +231,12 @@ struct VersalImageHeaderContext {
     std::string name;
     uint32_t first_partition_header_offset = 0; // bytes
     uint32_t partition_count = 0;
+    uint32_t image_attributes = 0;
+};
+
+struct VersalPartitionOwnerContext {
+    std::string name;
+    uint32_t image_attributes = 0;
 };
 
 static std::string sanitize_name(std::string value) {
@@ -273,6 +279,7 @@ static std::vector<VersalImageHeaderContext> parse_versal_image_headers(Reader& 
         VersalImageHeaderContext ctx;
         ctx.first_partition_header_offset = ih.first_partition_header_word_offset * 4;
         ctx.partition_count = ih.partition_count;
+        ctx.image_attributes = ih.image_attributes;
         ctx.name = parse_versal_image_name(ih);
         contexts.push_back(std::move(ctx));
     }
@@ -280,12 +287,12 @@ static std::vector<VersalImageHeaderContext> parse_versal_image_headers(Reader& 
     return contexts;
 }
 
-static std::unordered_map<uint32_t, std::string> build_versal_partition_owner_map(
+static std::unordered_map<uint32_t, VersalPartitionOwnerContext> build_versal_partition_owner_map(
     Reader& reader,
     const std::vector<VersalImageHeaderContext>& image_contexts,
     ParsedImage& img,
     LogCallback logger) {
-    std::unordered_map<uint32_t, std::string> owners;
+    std::unordered_map<uint32_t, VersalPartitionOwnerContext> owners;
 
     for (size_t i = 0; i < image_contexts.size(); ++i) {
         const auto& ctx = image_contexts[i];
@@ -301,7 +308,8 @@ static std::unordered_map<uint32_t, std::string> build_versal_partition_owner_ma
         uint32_t current_partition_offset = ctx.first_partition_header_offset;
         uint32_t traversed = 0;
         while (current_partition_offset != 0 && current_partition_offset != 0xFFFFFFFF && traversed < ctx.partition_count) {
-            owners[current_partition_offset] = image_name;
+            owners[current_partition_offset] = VersalPartitionOwnerContext{.name = image_name,
+                                                                          .image_attributes = ctx.image_attributes};
 
             versal::PartitionHeader ph{};
             if (!reader.read_bytes(current_partition_offset, &ph, sizeof(ph))) {
@@ -436,6 +444,23 @@ static bool has_microblaze_plm_partition(const ParsedImage& img) {
     return false;
 }
 
+static bool is_a5x_family_destination_cpu(DestinationCpu destination_cpu) {
+    return destination_cpu == DestinationCpu::A53_0 ||
+           destination_cpu == DestinationCpu::A53_1 ||
+           destination_cpu == DestinationCpu::A53_2 ||
+           destination_cpu == DestinationCpu::A53_3 ||
+           destination_cpu == DestinationCpu::A72_0 ||
+           destination_cpu == DestinationCpu::A72_1 ||
+           destination_cpu == DestinationCpu::A78_0 ||
+           destination_cpu == DestinationCpu::A78_1 ||
+           destination_cpu == DestinationCpu::A78_2 ||
+           destination_cpu == DestinationCpu::A78_3;
+}
+
+static ArmBitnessHint decode_a5x_exec_state(uint32_t attributes) {
+    return ((attributes >> 3) & 0x1) ? ArmBitnessHint::AArch32 : ArmBitnessHint::AArch64;
+}
+
 static DestinationCpu decode_zynqmp_destination_cpu(uint32_t attributes) {
     switch ((attributes >> 8) & 0xF) {
         case 0x0: return DestinationCpu::None;
@@ -447,7 +472,7 @@ static DestinationCpu decode_zynqmp_destination_cpu(uint32_t attributes) {
         case 0x6: return DestinationCpu::R5_1;
         case 0x7: return DestinationCpu::R5_Lockstep;
         case 0x8: return DestinationCpu::PMU;
-        default:  return DestinationCpu::Unknown;
+        default: return DestinationCpu::Unknown;
     }
 }
 
@@ -461,7 +486,7 @@ static DestinationCpu decode_versal_gen1_destination_cpu(uint32_t attributes) {
         case 0x7: return DestinationCpu::R5_Lockstep;
         case 0x8: return DestinationCpu::PSM;
         case 0x9: return DestinationCpu::AIE;
-        default:  return DestinationCpu::Unknown;
+        default: return DestinationCpu::Unknown;
     }
 }
 
@@ -476,8 +501,185 @@ static DestinationCpu decode_versal_gen2_destination_cpu(uint32_t attributes) {
         case 0x6: return DestinationCpu::R52_1;
         case 0x8: return DestinationCpu::ASU;
         case 0x9: return DestinationCpu::AIE;
-        default:  return DestinationCpu::Unknown;
+        default: return DestinationCpu::Unknown;
     }
+}
+
+static DestinationDevice decode_zynq7000_destination_device(uint32_t attributes) {
+    switch ((attributes >> 4) & 0xF) {
+        case 0x0: return DestinationDevice::None;
+        case 0x1: return DestinationDevice::PS;
+        case 0x2: return DestinationDevice::PL;
+        case 0x3: return DestinationDevice::INT;
+        default: return DestinationDevice::Unknown;
+    }
+}
+
+static DestinationDevice decode_zynqmp_destination_device(uint32_t attributes) {
+    switch ((attributes >> 4) & 0x7) {
+        case 0x0: return DestinationDevice::None;
+        case 0x1: return DestinationDevice::PS;
+        case 0x2: return DestinationDevice::PL;
+        default: return DestinationDevice::Unknown;
+    }
+}
+
+static PartitionType decode_versal_partition_type(uint32_t attributes) {
+    switch ((attributes >> 24) & 0x7) {
+        case 0x0: return PartitionType::Reserved;
+        case 0x1: return PartitionType::Elf;
+        case 0x2: return PartitionType::Cdo;
+        case 0x3: return PartitionType::CFrame;
+        case 0x4: return PartitionType::Raw;
+        case 0x5: return PartitionType::RawElf;
+        case 0x6: return PartitionType::CfiGsrCscUnmask;
+        case 0x7: return PartitionType::CfiGsrCscMask;
+        default: return PartitionType::Unknown;
+    }
+}
+
+static ExceptionLevel decode_exception_level(uint32_t attributes) {
+    switch ((attributes >> 1) & 0x3) {
+        case 0x0: return ExceptionLevel::EL0;
+        case 0x1: return ExceptionLevel::EL1;
+        case 0x2: return ExceptionLevel::EL2;
+        case 0x3: return ExceptionLevel::EL3;
+        default: return ExceptionLevel::Unknown;
+    }
+}
+
+static PartitionType infer_legacy_partition_type(DestinationDevice destination_device,
+                                                 DestinationCpu destination_cpu,
+                                                 uint64_t exec_address) {
+    if (destination_device == DestinationDevice::PL) {
+        return PartitionType::CFrame;
+    }
+
+    const bool has_exec = exec_address != 0 && exec_address != 0xFFFFFFFFULL;
+    if (destination_cpu != DestinationCpu::None && destination_cpu != DestinationCpu::Unknown && has_exec) {
+        return PartitionType::Elf;
+    }
+
+    if (destination_device == DestinationDevice::PS) {
+        return PartitionType::Raw;
+    }
+
+    return PartitionType::Unknown;
+}
+
+static DestinationDevice derive_versal_destination_device(PartitionType partition_type,
+                                                          DestinationCpu destination_cpu) {
+    switch (partition_type) {
+        case PartitionType::CFrame:
+        case PartitionType::CfiGsrCscUnmask:
+        case PartitionType::CfiGsrCscMask:
+            return DestinationDevice::PL;
+        default:
+            break;
+    }
+
+    if (destination_cpu == DestinationCpu::AIE) {
+        return DestinationDevice::AIE;
+    }
+
+    if (destination_cpu != DestinationCpu::None && destination_cpu != DestinationCpu::Unknown) {
+        return DestinationDevice::PS;
+    }
+
+    if (partition_type == PartitionType::Cdo) {
+        return DestinationDevice::PS;
+    }
+
+    if (partition_type == PartitionType::Reserved) {
+        return DestinationDevice::None;
+    }
+
+    return DestinationDevice::Unknown;
+}
+
+struct DecodedPartitionAttributes {
+    DestinationCpu destination_cpu = DestinationCpu::Unknown;
+    DestinationDevice destination_device = DestinationDevice::Unknown;
+    PartitionType partition_type = PartitionType::Unknown;
+    ArmBitnessHint arm_bitness_hint = ArmBitnessHint::Unknown;
+    ExceptionLevel exception_level = ExceptionLevel::Unknown;
+    bool trustzone_valid = false;
+    bool trustzone_secure = false;
+    bool big_endian = false;
+    bool hivec = false;
+    bool early_handoff = false;
+    bool delay_load = false;
+    bool delay_handoff = false;
+    bool destination_cluster_valid = false;
+    uint8_t destination_cluster = 0;
+    bool lockstep_enabled = false;
+};
+
+static DecodedPartitionAttributes decode_zynq7000_attributes(uint32_t attributes,
+                                                             uint64_t exec_address) {
+    DecodedPartitionAttributes decoded;
+    decoded.destination_device = decode_zynq7000_destination_device(attributes);
+    decoded.partition_type = infer_legacy_partition_type(decoded.destination_device,
+                                                         decoded.destination_cpu,
+                                                         exec_address);
+    return decoded;
+}
+
+static DecodedPartitionAttributes decode_zynqmp_attributes(uint32_t attributes,
+                                                           uint64_t exec_address) {
+    DecodedPartitionAttributes decoded;
+    decoded.destination_cpu = decode_zynqmp_destination_cpu(attributes);
+    decoded.destination_device = decode_zynqmp_destination_device(attributes);
+    decoded.partition_type = infer_legacy_partition_type(decoded.destination_device,
+                                                         decoded.destination_cpu,
+                                                         exec_address);
+    decoded.hivec = ((attributes >> 23) & 0x1) != 0;
+    decoded.early_handoff = ((attributes >> 19) & 0x1) != 0;
+    decoded.big_endian = ((attributes >> 18) & 0x1) != 0;
+    decoded.arm_bitness_hint = is_a5x_family_destination_cpu(decoded.destination_cpu)
+                                   ? decode_a5x_exec_state(attributes)
+                                   : ArmBitnessHint::Unknown;
+    decoded.exception_level = decode_exception_level(attributes);
+    decoded.trustzone_valid = true;
+    decoded.trustzone_secure = (attributes & 0x1) != 0;
+    return decoded;
+}
+
+static DecodedPartitionAttributes decode_versal_gen1_attributes(uint32_t attributes) {
+    DecodedPartitionAttributes decoded;
+    decoded.destination_cpu = decode_versal_gen1_destination_cpu(attributes);
+    decoded.partition_type = decode_versal_partition_type(attributes);
+    decoded.destination_device = derive_versal_destination_device(decoded.partition_type,
+                                                                  decoded.destination_cpu);
+    decoded.hivec = ((attributes >> 23) & 0x1) != 0;
+    decoded.big_endian = ((attributes >> 18) & 0x1) != 0;
+    decoded.arm_bitness_hint = is_a5x_family_destination_cpu(decoded.destination_cpu)
+                                   ? decode_a5x_exec_state(attributes)
+                                   : ArmBitnessHint::Unknown;
+    decoded.exception_level = decode_exception_level(attributes);
+    decoded.trustzone_valid = true;
+    decoded.trustzone_secure = (attributes & 0x1) != 0;
+    return decoded;
+}
+
+static DecodedPartitionAttributes decode_versal_gen2_attributes(uint32_t attributes) {
+    DecodedPartitionAttributes decoded;
+    decoded.destination_cpu = decode_versal_gen2_destination_cpu(attributes);
+    decoded.partition_type = decode_versal_partition_type(attributes);
+    decoded.destination_device = derive_versal_destination_device(decoded.partition_type,
+                                                                  decoded.destination_cpu);
+    decoded.hivec = ((attributes >> 23) & 0x1) != 0;
+    decoded.big_endian = ((attributes >> 18) & 0x1) != 0;
+    decoded.arm_bitness_hint = is_a5x_family_destination_cpu(decoded.destination_cpu)
+                                   ? decode_a5x_exec_state(attributes)
+                                   : ArmBitnessHint::Unknown;
+    decoded.exception_level = decode_exception_level(attributes);
+    decoded.trustzone_valid = true;
+    decoded.trustzone_secure = (attributes & 0x1) != 0;
+    decoded.destination_cluster_valid = true;
+    decoded.destination_cluster = static_cast<uint8_t>((attributes >> 29) & 0x7);
+    decoded.lockstep_enabled = ((attributes >> 4) & 0x3) == 0x3;
+    return decoded;
 }
 
 static ProcessorFamily processor_family_for_destination_cpu(DestinationCpu destination_cpu) {
@@ -508,23 +710,6 @@ static ProcessorFamily processor_family_for_destination_cpu(DestinationCpu desti
         default:
             return ProcessorFamily::Unknown;
     }
-}
-
-static bool is_a5x_family_destination_cpu(DestinationCpu destination_cpu) {
-    return destination_cpu == DestinationCpu::A53_0 ||
-           destination_cpu == DestinationCpu::A53_1 ||
-           destination_cpu == DestinationCpu::A53_2 ||
-           destination_cpu == DestinationCpu::A53_3 ||
-           destination_cpu == DestinationCpu::A72_0 ||
-           destination_cpu == DestinationCpu::A72_1 ||
-           destination_cpu == DestinationCpu::A78_0 ||
-           destination_cpu == DestinationCpu::A78_1 ||
-           destination_cpu == DestinationCpu::A78_2 ||
-           destination_cpu == DestinationCpu::A78_3;
-}
-
-static ArmBitnessHint decode_a5x_exec_state(uint32_t attributes) {
-    return ((attributes >> 3) & 0x1) ? ArmBitnessHint::AArch32 : ArmBitnessHint::AArch64;
 }
 
 static PartitionChecksumType decode_zynq7000_checksum_type(uint32_t attributes) {
@@ -598,6 +783,70 @@ static void add_partition_security_warning(PartitionInfo& part,
 
 static bool has_valid_exec_address(uint64_t exec_address) {
     return exec_address != 0 && exec_address != 0xFFFFFFFFULL;
+}
+
+static bool is_configuration_partition_type(PartitionType partition_type) {
+    return partition_type == PartitionType::Cdo ||
+           partition_type == PartitionType::CFrame ||
+           partition_type == PartitionType::CfiGsrCscUnmask ||
+           partition_type == PartitionType::CfiGsrCscMask;
+}
+
+static void apply_decoded_attributes(PartitionInfo& part, const DecodedPartitionAttributes& decoded) {
+    part.destination_cpu = decoded.destination_cpu;
+    part.destination_device = decoded.destination_device;
+    part.partition_type = decoded.partition_type;
+    part.arm_bitness_hint = decoded.arm_bitness_hint;
+    part.exception_level = decoded.exception_level;
+    part.trustzone_valid = decoded.trustzone_valid;
+    part.trustzone_secure = decoded.trustzone_secure;
+    part.big_endian = decoded.big_endian;
+    part.hivec = decoded.hivec;
+    part.early_handoff = decoded.early_handoff;
+    part.delay_load = decoded.delay_load;
+    part.delay_handoff = decoded.delay_handoff;
+    part.destination_cluster_valid = decoded.destination_cluster_valid;
+    part.destination_cluster = decoded.destination_cluster;
+    part.lockstep_enabled = decoded.lockstep_enabled;
+}
+
+static void emit_attribute_diagnostics(PartitionInfo& part, ParsedImage& img, LogCallback logger) {
+    const std::string partition_name = part.name.empty() ? "<unnamed_partition>" : part.name;
+
+    if (part.big_endian) {
+        add_warning(img,
+                    logger,
+                    "Partition '" + partition_name +
+                        "' is marked big-endian; loader behavior is currently optimized for little-endian payloads.");
+    }
+
+    if (part.destination_device == DestinationDevice::PL && has_valid_exec_address(part.exec_address)) {
+        add_warning(img,
+                    logger,
+                    "Partition '" + partition_name +
+                        "' targets PL but also has an execution address; loader will treat it as non-code data.");
+    }
+
+    if (part.early_handoff) {
+        add_warning(img,
+                    logger,
+                    "Partition '" + partition_name +
+                        "' requests early handoff semantics which are not fully modeled yet.");
+    }
+
+    if (part.delay_load || part.delay_handoff) {
+        add_warning(img,
+                    logger,
+                    "Partition '" + partition_name +
+                        "' uses delay-load/delay-handoff attributes; deferred execution ordering is not yet modeled.");
+    }
+
+    if (is_configuration_partition_type(part.partition_type) && has_valid_exec_address(part.exec_address)) {
+        add_warning(img,
+                    logger,
+                    "Partition '" + partition_name +
+                        "' is configuration-data typed but carries an execution address; executable mapping will be suppressed.");
+    }
 }
 
 struct ProcessorFamilyScores {
@@ -1139,6 +1388,11 @@ static void parse_zynq7000(Reader& reader, ParsedImage& img, LogCallback logger)
         pinfo.has_auth_certificate = pinfo.auth_certificate.present || (((ph.attributes >> 15) & 0x1) != 0);
         pinfo.checksum_type = decode_zynq7000_checksum_type(ph.attributes);
         pinfo.hash_algo = hash_algo_for_checksum_type(pinfo.checksum_type);
+        apply_decoded_attributes(pinfo, decode_zynq7000_attributes(ph.attributes, pinfo.exec_address));
+        if (pinfo.destination_device == DestinationDevice::PS && has_valid_exec_address(pinfo.exec_address)) {
+            pinfo.processor_family = ProcessorFamily::Arm;
+            pinfo.arm_bitness_hint = ArmBitnessHint::AArch32;
+        }
         const uint32_t image_header_offset = ph.image_header_word_offset * 4;
         auto ctx_it = image_headers.find(image_header_offset);
         if (ctx_it != image_headers.end() && !ctx_it->second.name.empty()) {
@@ -1162,6 +1416,7 @@ static void parse_zynq7000(Reader& reader, ParsedImage& img, LogCallback logger)
                                            img,
                                            "partition marked encrypted; payload may be ciphertext and not directly executable.");
         }
+        emit_attribute_diagnostics(pinfo, img, logger);
         if (pinfo.auth_certificate.present && !pinfo.auth_certificate.header_readable) {
             add_partition_security_warning(
                 pinfo,
@@ -1231,6 +1486,8 @@ static void parse_zynqmp(Reader& reader, ParsedImage& img, LogCallback logger) {
         pmufw.data_size = bh.pmu_image_length;
         pmufw.processor_family = ProcessorFamily::MicroBlaze;
         pmufw.destination_cpu = DestinationCpu::PMU;
+        pmufw.destination_device = DestinationDevice::PS;
+        pmufw.partition_type = PartitionType::Raw;
         pmufw.arm_bitness_hint = ArmBitnessHint::Unknown;
         pmufw.name = "PMUFW";
         img.partitions.push_back(pmufw);
@@ -1261,6 +1518,8 @@ static void parse_zynqmp(Reader& reader, ParsedImage& img, LogCallback logger) {
         fsbl.is_bootloader_partition = true;
         fsbl.processor_family = ProcessorFamily::Arm;
         fsbl.destination_cpu = DestinationCpu::A53_0;
+        fsbl.destination_device = DestinationDevice::PS;
+        fsbl.partition_type = PartitionType::Elf;
         fsbl.arm_bitness_hint = ArmBitnessHint::Unknown;
         fsbl.name = "FSBL";
         img.partitions.push_back(fsbl);
@@ -1372,10 +1631,12 @@ static void parse_zynqmp(Reader& reader, ParsedImage& img, LogCallback logger) {
         pinfo.has_auth_certificate = pinfo.auth_certificate.present || (((ph.attributes >> 15) & 0x1) != 0);
         pinfo.checksum_type = decode_zynqmp_checksum_type(ph.attributes);
         pinfo.hash_algo = hash_algo_for_checksum_type(pinfo.checksum_type);
-        pinfo.destination_cpu = decode_zynqmp_destination_cpu(ph.attributes);
+        apply_decoded_attributes(pinfo, decode_zynqmp_attributes(ph.attributes, pinfo.exec_address));
         pinfo.processor_family = processor_family_for_destination_cpu(pinfo.destination_cpu);
-        if (is_a5x_family_destination_cpu(pinfo.destination_cpu)) {
-            pinfo.arm_bitness_hint = decode_a5x_exec_state(ph.attributes);
+        if (pinfo.processor_family == ProcessorFamily::Unknown &&
+            pinfo.destination_device == DestinationDevice::PS &&
+            has_valid_exec_address(pinfo.exec_address)) {
+            pinfo.processor_family = ProcessorFamily::Arm;
         }
         const uint32_t image_header_offset = ph.image_header_word_offset * 4;
         auto ctx_it = image_headers.find(image_header_offset);
@@ -1400,6 +1661,7 @@ static void parse_zynqmp(Reader& reader, ParsedImage& img, LogCallback logger) {
                                            img,
                                            "partition marked encrypted; payload may be ciphertext and not directly executable.");
         }
+        emit_attribute_diagnostics(pinfo, img, logger);
         if (pinfo.auth_certificate.present && !pinfo.auth_certificate.header_readable) {
             add_partition_security_warning(
                 pinfo,
@@ -1487,6 +1749,8 @@ static void parse_versal_gen1(Reader& reader, ParsedImage& img, LogCallback logg
         plm.data_size = bh.plm_length;
         plm.processor_family = ProcessorFamily::MicroBlaze;
         plm.destination_cpu = DestinationCpu::PSM;
+        plm.destination_device = DestinationDevice::PS;
+        plm.partition_type = PartitionType::Elf;
         plm.arm_bitness_hint = ArmBitnessHint::Unknown;
         plm.name = "PLM";
         img.partitions.push_back(plm);
@@ -1498,6 +1762,8 @@ static void parse_versal_gen1(Reader& reader, ParsedImage& img, LogCallback logg
         data.exec_address = 0;
         data.data_offset = bh.plm_source_offset + bh.total_plm_length;
         data.data_size = bh.pmc_data_length;
+        data.destination_device = DestinationDevice::PS;
+        data.partition_type = PartitionType::Cdo;
         data.name = "PMC_DATA";
         img.partitions.push_back(data);
     }
@@ -1590,15 +1856,19 @@ static void parse_versal_gen1(Reader& reader, ParsedImage& img, LogCallback logg
         pinfo.has_auth_certificate = has_hash_block_ac || has_auth_header;
         pinfo.checksum_type = PartitionChecksumType::Unknown;
         pinfo.hash_algo = PartitionHashAlgorithm::Unknown;
-        pinfo.destination_cpu = decode_versal_gen1_destination_cpu(ph.attributes);
+        apply_decoded_attributes(pinfo, decode_versal_gen1_attributes(ph.attributes));
         pinfo.processor_family = processor_family_for_destination_cpu(pinfo.destination_cpu);
-        if (is_a5x_family_destination_cpu(pinfo.destination_cpu)) {
-            pinfo.arm_bitness_hint = decode_a5x_exec_state(ph.attributes);
+        if (pinfo.processor_family == ProcessorFamily::Unknown &&
+            pinfo.destination_device == DestinationDevice::PS &&
+            has_valid_exec_address(pinfo.exec_address)) {
+            pinfo.processor_family = ProcessorFamily::Arm;
         }
 
         auto owner_it = partition_owner_names.find(ph_offset);
-        if (owner_it != partition_owner_names.end() && !owner_it->second.empty()) {
-            pinfo.name = owner_it->second;
+        if (owner_it != partition_owner_names.end() && !owner_it->second.name.empty()) {
+            pinfo.name = owner_it->second.name;
+            pinfo.delay_load = ((owner_it->second.image_attributes >> 7) & 0x1) != 0;
+            pinfo.delay_handoff = ((owner_it->second.image_attributes >> 8) & 0x1) != 0;
         } else {
             pinfo.name = "PDI_PART_" + std::to_string(count);
             if (unknown_owner_offsets.insert(ph_offset).second) {
@@ -1617,6 +1887,7 @@ static void parse_versal_gen1(Reader& reader, ParsedImage& img, LogCallback logg
                                            img,
                                            "partition encryption key selector is present; payload may be ciphertext.");
         }
+        emit_attribute_diagnostics(pinfo, img, logger);
         if (has_hash_block_ac && has_auth_header && ph.hash_block_ac_offset != ph.authentication_header) {
             add_partition_security_warning(
                 pinfo,
@@ -1664,6 +1935,8 @@ static void parse_versal_gen2(Reader& reader, ParsedImage& img, LogCallback logg
                              "Versal Gen2 boot header",
                              validate_inverse_sum_checksum(reader, 0x10, 0x113C));
     DestinationCpu first_partition_cpu = DestinationCpu::Unknown;
+    PartitionType first_partition_type = PartitionType::Unknown;
+    DestinationDevice first_partition_device = DestinationDevice::Unknown;
     if (probe.iht_layout_valid) {
         versal::ImageHeaderTable iht{};
         if (reader.read_bytes(probe.iht_offset, &iht, sizeof(iht))) {
@@ -1676,7 +1949,15 @@ static void parse_versal_gen2(Reader& reader, ParsedImage& img, LogCallback logg
             if (first_partition_header_offset != 0 && first_partition_header_offset != 0xFFFFFFFF) {
                 versal::PartitionHeader ph{};
                 if (reader.read_bytes(first_partition_header_offset, &ph, sizeof(ph))) {
-                    first_partition_cpu = decode_versal_gen2_destination_cpu(ph.attributes);
+                    const auto decoded = decode_versal_gen2_attributes(ph.attributes);
+                    first_partition_cpu = decoded.destination_cpu;
+                    first_partition_type = decoded.partition_type;
+                    first_partition_device = decoded.destination_device;
+                    if (decoded.big_endian) {
+                        add_warning(img,
+                                    logger,
+                                    "Versal Gen2 first partition is marked big-endian; full partition semantics are not yet modeled.");
+                    }
                 }
             }
         }
@@ -1685,10 +1966,12 @@ static void parse_versal_gen2(Reader& reader, ParsedImage& img, LogCallback logg
     if (logger) {
         char msg[224] = {0};
         std::snprintf(msg, sizeof(msg),
-                      "Versal Gen2 parse entry point reached (iht_valid=%u, iht_offset=0x%08X, first_dest_cpu=%u). Detailed partition parsing pending.\n",
+                      "Versal Gen2 parse entry point reached (iht_valid=%u, iht_offset=0x%08X, first_dest_cpu=%u, first_type=%u, first_dev=%u). Detailed partition parsing pending.\n",
                       probe.iht_layout_valid ? 1U : 0U,
                       probe.iht_offset,
-                      static_cast<unsigned int>(first_partition_cpu));
+                      static_cast<unsigned int>(first_partition_cpu),
+                      static_cast<unsigned int>(first_partition_type),
+                      static_cast<unsigned int>(first_partition_device));
         logger(msg);
     }
 }

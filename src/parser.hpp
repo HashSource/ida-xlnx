@@ -52,6 +52,35 @@ enum class DestinationCpu {
     ASU,
 };
 
+enum class DestinationDevice {
+    Unknown,
+    None,
+    PS,
+    PL,
+    INT,
+    AIE,
+};
+
+enum class PartitionType {
+    Unknown,
+    Reserved,
+    Elf,
+    Cdo,
+    CFrame,
+    Raw,
+    RawElf,
+    CfiGsrCscUnmask,
+    CfiGsrCscMask,
+};
+
+enum class ExceptionLevel {
+    Unknown,
+    EL0,
+    EL1,
+    EL2,
+    EL3,
+};
+
 enum class PartitionChecksumType {
     Unknown,
     None,
@@ -97,7 +126,20 @@ struct PartitionInfo {
     std::vector<uint32_t> partition_iv_kek;
     ProcessorFamily processor_family = ProcessorFamily::Unknown;
     DestinationCpu destination_cpu = DestinationCpu::Unknown;
+    DestinationDevice destination_device = DestinationDevice::Unknown;
+    PartitionType partition_type = PartitionType::Unknown;
     ArmBitnessHint arm_bitness_hint = ArmBitnessHint::Unknown;
+    ExceptionLevel exception_level = ExceptionLevel::Unknown;
+    bool trustzone_valid = false;
+    bool trustzone_secure = false;
+    bool big_endian = false;
+    bool hivec = false;
+    bool early_handoff = false;
+    bool delay_load = false;
+    bool delay_handoff = false;
+    bool destination_cluster_valid = false;
+    uint8_t destination_cluster = 0;
+    bool lockstep_enabled = false;
     std::vector<std::string> security_warnings;
     std::string name;
 };

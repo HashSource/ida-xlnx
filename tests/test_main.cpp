@@ -397,6 +397,44 @@ void test_zynqmp_iht_checksum_warning() {
     std::cout << "[OK] zynqmp_iht_checksum_warning" << std::endl;
 }
 
+void test_zynqmp_attribute_diagnostics() {
+    MemoryReader reader(4096);
+
+    auto* bh = reinterpret_cast<zynqmp::BootHeader*>(reader.data.data());
+    bh->width_detection_word = 0xAA995566;
+    bh->header_signature = 0x584C4E58;
+    bh->source_offset = 0x200;
+    bh->image_header_table_offset = 0x100;
+
+    auto* iht = reinterpret_cast<zynqmp::ImageHeaderTable*>(reader.data.data() + 0x100);
+    iht->version = 0x01010000;
+    iht->first_partition_header_offset = 0x200 / 4;
+
+    auto* ph = reinterpret_cast<zynqmp::PartitionHeader*>(reader.data.data() + 0x200);
+    ph->unencrypted_data_word_length = 0x10;
+    ph->total_partition_word_length = 0x10;
+    ph->next_partition_header_offset = 0;
+    ph->actual_partition_word_offset = 0x300 / 4;
+    ph->destination_execution_address_lo = 0x1000;
+    ph->destination_load_address_lo = 0x2000;
+    ph->attributes = (1u << 8) | (2u << 4) | (1u << 19) | (1u << 18) | (1u << 3);
+
+    auto img = parse_image(reader);
+    assert(img.arch == Arch::ZynqMP);
+    assert(img.partitions.size() == 1);
+    assert(img.partitions[0].destination_cpu == DestinationCpu::A53_0);
+    assert(img.partitions[0].destination_device == DestinationDevice::PL);
+    assert(img.partitions[0].partition_type == PartitionType::CFrame);
+    assert(img.partitions[0].arm_bitness_hint == ArmBitnessHint::AArch32);
+    assert(img.partitions[0].big_endian);
+    assert(img.partitions[0].early_handoff);
+    assert(has_warning_substring(img, "marked big-endian"));
+    assert(has_warning_substring(img, "targets PL but also has an execution address"));
+    assert(has_warning_substring(img, "requests early handoff semantics"));
+
+    std::cout << "[OK] zynqmp_attribute_diagnostics" << std::endl;
+}
+
 void test_spartan_detection() {
     MemoryReader reader(8192);
     auto write_u32 = [&](size_t off, uint32_t value) {
@@ -490,6 +528,7 @@ void test_zynq7000_partitions() {
     ph1->destination_execution_address = 0x10000000;
     ph1->data_word_offset = 0x1000 / 4;
     ph1->image_header_word_offset = 0x800 / 4;
+    ph1->attributes = (1u << 4);
     ph1->ac_offset = 0x300 / 4;
 
     uint32_t* ac_header = reinterpret_cast<uint32_t*>(reader.data.data() + 0x300);
@@ -514,6 +553,10 @@ void test_zynq7000_partitions() {
     assert(img.partitions[0].name == "FSBL10.ELF");
     assert(img.partitions[0].load_address == 0x10000000);
     assert(img.partitions[0].data_size == 1024);
+    assert(img.partitions[0].destination_device == DestinationDevice::PS);
+    assert(img.partitions[0].partition_type == PartitionType::Elf);
+    assert(img.partitions[0].processor_family == ProcessorFamily::Arm);
+    assert(img.partitions[0].arm_bitness_hint == ArmBitnessHint::AArch32);
     assert(img.partitions[0].has_auth_certificate);
     assert(img.partitions[0].auth_certificate.present);
     assert(img.partitions[0].auth_certificate.offset == 0x300);
@@ -558,6 +601,7 @@ void test_versal_partitions() {
     auto* ih1 = reinterpret_cast<versal::ImageHeader*>(reader.data.data() + 0x300);
     ih1->first_partition_header_word_offset = 0x200 / 4;
     ih1->partition_count = 1;
+    ih1->image_attributes = (1u << 8) | (1u << 7);
     std::memcpy(ih1->image_name, "APP_CPU", 7);
     
     auto* ph1 = reinterpret_cast<versal::PartitionHeader*>(reader.data.data() + 0x200);
@@ -567,7 +611,7 @@ void test_versal_partitions() {
     ph1->destination_execution_address_lo = 0xDDDDDDDD;
     ph1->destination_execution_address_hi = 0xCCCCCCCC;
     ph1->actual_partition_word_offset = 0x800 / 4;
-    ph1->attributes = (2u << 8) | (1u << 3); // A72-1, AArch32
+    ph1->attributes = (1u << 24) | (2u << 8) | (1u << 3); // ELF, A72-1, AArch32
     ph1->encryption_key_select = 0xA5C3C5A3;
     ph1->hash_block_ac_offset = 0x700 / 4;
     ph1->iv[0] = 0x11111111;
@@ -590,8 +634,8 @@ void test_versal_partitions() {
     assert(img.processor_name == "mblaze");
     assert(img.processor_selection.family == ProcessorFamily::MicroBlaze);
     assert(img.processor_selection.source.find("mixed_policy:") == 0);
-    assert(!img.warnings.empty());
-    assert(img.warnings[0].find("Mixed-CPU image:") == 0);
+    assert(has_warning_substring(img, "Mixed-CPU image:"));
+    assert(has_warning_substring(img, "delay-load/delay-handoff attributes"));
     assert(img.partitions.size() == 3); // PLM + PMC + Partition
     
     assert(img.partitions[0].name == "PLM");
@@ -606,8 +650,12 @@ void test_versal_partitions() {
     
     assert(img.partitions[2].name == "APP_CPU");
     assert(img.partitions[2].destination_cpu == DestinationCpu::A72_1);
+    assert(img.partitions[2].destination_device == DestinationDevice::PS);
+    assert(img.partitions[2].partition_type == PartitionType::Elf);
     assert(img.partitions[2].processor_family == ProcessorFamily::Arm);
     assert(img.partitions[2].arm_bitness_hint == ArmBitnessHint::AArch32);
+    assert(img.partitions[2].delay_load);
+    assert(img.partitions[2].delay_handoff);
     assert(img.partitions[2].is_encrypted);
     assert(img.partitions[2].has_auth_certificate);
     assert(img.partitions[2].auth_certificate.present);
@@ -636,6 +684,7 @@ int main() {
     test_zynqmp_pmufw_prefix();
     test_zynqmp_partition_attr_decode();
     test_zynqmp_iht_checksum_warning();
+    test_zynqmp_attribute_diagnostics();
     test_versal_detection();
     test_spartan_detection();
     test_versal_gen2_detection();
