@@ -21,9 +21,9 @@ using namespace xilinx;
 
 struct MemoryReader : public Reader {
     std::vector<uint8_t> data;
-    
+
     MemoryReader(size_t size) : data(size, 0) {}
-    
+
     bool read_bytes(uint64_t offset, void* buffer, size_t size) override {
         if (offset + size > data.size()) return false;
         std::memcpy(buffer, data.data() + offset, size);
@@ -33,7 +33,7 @@ struct MemoryReader : public Reader {
 
 struct FileReader : public Reader {
     std::vector<uint8_t> data;
-    
+
     static std::optional<FileReader> open(const std::string& path) {
         std::ifstream f(path, std::ios::binary | std::ios::ate);
         if (!f.is_open()) return std::nullopt;
@@ -44,7 +44,7 @@ struct FileReader : public Reader {
         f.read(reinterpret_cast<char*>(reader.data.data()), size);
         return reader;
     }
-    
+
     bool read_bytes(uint64_t offset, void* buffer, size_t size) override {
         if (offset + size > data.size()) return false;
         std::memcpy(buffer, data.data() + offset, size);
@@ -111,7 +111,7 @@ void test_unpack_name() {
     // "FSBL" -> bytes F,S,B,L -> stored as LE u32 0x4C425346 -> on-disk bytes L,B,S,F
     uint8_t packed[] = { 'L', 'B', 'S', 'F', 'E', '.', '0', '1', '\0', '\0', 'F', 'L', 0,0,0,0 };
     std::memcpy(reader.data.data() + 0x20, packed, sizeof(packed));
-    
+
     std::string name = unpack_image_name(reader, 0x10);
     assert(name == "FSBL10.ELF");
     std::cout << "[OK] unpack_name" << std::endl;
@@ -127,7 +127,7 @@ void test_zynq7000_detection() {
     bh->source_offset = 0x200;
     bh->fsbl_image_length = 0x20;
     bh->qspi_config_word = 0x12345678;
-    
+
     auto img = parse_image(reader);
     assert(img.arch == Arch::Zynq7000);
     assert(img.format_name == "Xilinx Zynq 7000 Boot Image");
@@ -171,7 +171,7 @@ void test_zynqmp_detection() {
     bh->obfuscated_black_key_iv[1] = 0xAAAAAAA2;
     bh->obfuscated_black_key_iv[2] = 0xAAAAAAA3;
     bh->obfuscated_black_key_storage[0] = 0xCAFEBABE;
-    
+
     auto img = parse_image(reader);
     assert(img.arch == Arch::ZynqMP);
     assert(img.format_name == "Xilinx Zynq UltraScale+ MPSoC Boot Image");
@@ -285,7 +285,7 @@ void test_versal_detection() {
     write_u32(0x1080 + 0x00, opt_entry_header);
     write_u32(0x1080 + 0x04, opt_entry_data);
     write_u32(0x1080 + 0x08, opt_entry_checksum);
-    
+
     auto img = parse_image(reader);
     assert(img.arch == Arch::VersalGen1);
     assert(img.format_name == "Xilinx Versal Adaptive SoC Gen 1 PDI");
@@ -683,14 +683,14 @@ void test_zynq7000_partitions() {
     bh->header_version = 0x01010000;
     bh->image_header_table_offset = 0x100 / 4; // Word offset -> 0x100
     bh->fsbl_execution_address = 0x11223344;
-    
+
     // Image Header Table
     auto* iht = reinterpret_cast<zynq7000::ImageHeaderTable*>(reader.data.data() + 0x100);
     iht->version = 0x01010000;
     iht->count_of_image_header = 1;
     iht->first_partition_header_offset = 0x200 / 4; // -> 0x200
     iht->first_image_header_offset = 0x800 / 4;
-    
+
     // Partition Header 1
     auto* ph1 = reinterpret_cast<zynq7000::PartitionHeader*>(reader.data.data() + 0x200);
     ph1->unencrypted_partition_length = 0x400 / 4; // 1024 bytes
@@ -711,7 +711,7 @@ void test_zynq7000_partitions() {
     ih1->next_image_header_offset = 0;
     ih1->corresponding_partition_header = 0x200 / 4;
     ih1->partition_count = 1;
-    
+
     // Image names stored with bytes reversed within each u32 word (BE char order in LE word)
     uint8_t packed[] = { 'L', 'B', 'S', 'F', 'E', '.', '0', '1', '\0', '\0', 'F', 'L', 0,0,0,0 };
     std::memcpy(reader.data.data() + 0x810, packed, sizeof(packed));
@@ -719,7 +719,7 @@ void test_zynq7000_partitions() {
     // Partition Header 2 (end)
     auto* ph2 = reinterpret_cast<zynq7000::PartitionHeader*>(reader.data.data() + 0x200 + sizeof(zynq7000::PartitionHeader));
     ph2->unencrypted_partition_length = 0;
-    
+
     auto img = parse_image(reader);
     assert(img.arch == Arch::Zynq7000);
     assert(img.load_supported);
@@ -738,7 +738,7 @@ void test_zynq7000_partitions() {
     assert(img.partitions[0].auth_certificate.header_readable);
     assert(img.partitions[0].auth_certificate.header_words.size() == 4);
     assert(img.partitions[0].auth_certificate.header_words[0] == 0x43455254);
-    
+
     std::cout << "[OK] zynq7000_partitions" << std::endl;
 }
 
@@ -748,7 +748,7 @@ int main_old() {
     test_zynqmp_detection();
     test_versal_detection();
     test_zynq7000_partitions();
-    
+
     std::cout << "All headless tests passed!" << std::endl;
     return 0;
 }
@@ -764,7 +764,7 @@ void test_versal_partitions() {
     bh->pmc_data_length = 0x500;
     bh->total_plm_length = 0x2100;
     bh->meta_header_offset = 0x1000;
-    
+
     auto* iht = reinterpret_cast<versal::ImageHeaderTable*>(reader.data.data() + 0x1000);
     iht->version = 0x00040000;
     iht->total_number_of_images = 1;
@@ -778,7 +778,7 @@ void test_versal_partitions() {
     ih1->partition_count = 1;
     ih1->image_attributes = (1u << 8) | (1u << 7);
     std::memcpy(ih1->image_name, "APP_CPU", 7);
-    
+
     auto* ph1 = reinterpret_cast<versal::PartitionHeader*>(reader.data.data() + 0x200);
     ph1->unencrypted_data_word_length = 0x400 / 4;
     ph1->destination_load_address_lo = 0xBBBBBBBB;
@@ -802,7 +802,7 @@ void test_versal_partitions() {
     ac_header[1] = 0x00000003;
     ac_header[2] = 0x00000030;
     ac_header[3] = 0x76543210;
-    
+
     auto img = parse_image(reader);
     assert(img.arch == Arch::VersalGen1);
     assert(img.load_supported);
@@ -812,17 +812,17 @@ void test_versal_partitions() {
     assert(has_warning_substring(img, "Mixed-CPU image:"));
     assert(has_warning_substring(img, "delay-load/delay-handoff attributes"));
     assert(img.partitions.size() == 3); // PLM + PMC + Partition
-    
+
     assert(img.partitions[0].name == "PLM");
     assert(img.partitions[0].processor_family == ProcessorFamily::MicroBlaze);
     assert(img.partitions[0].load_address == 0xF0280000);
     assert(img.partitions[0].data_size == 0x2000);
-    
+
     assert(img.partitions[1].name == "PMC_DATA");
     assert(img.partitions[1].load_address == 0x11223344);
     assert(img.partitions[1].data_size == 0x500);
     assert(img.partitions[1].data_offset == 0x1000 + 0x2100);
-    
+
     assert(img.partitions[2].name == "APP_CPU");
     assert(img.partitions[2].destination_cpu == DestinationCpu::A72_1);
     assert(img.partitions[2].destination_device == DestinationDevice::PS);
@@ -848,7 +848,7 @@ void test_versal_partitions() {
     assert(img.partitions[2].load_address == 0xAAAAAAAABBBBBBBBULL);
     assert(img.partitions[2].exec_address == 0xCCCCCCCCDDDDDDDDULL);
     assert(img.partitions[2].data_size == 0x400);
-    
+
     std::cout << "[OK] versal_partitions" << std::endl;
 }
 
@@ -971,20 +971,96 @@ int main(int argc, char** argv) {
     test_versal_partitions();
 
     // Real file tests (optional, run with path argument or default location)
-    std::string real_zynq7000_path;
-    if (argc > 1) {
-        real_zynq7000_path = argv[1];
-    } else {
-        // Default test file location
-        const char* home = std::getenv("HOME");
-        if (home) {
-            real_zynq7000_path = std::string(home) +
-                "/Downloads/hashsource_antminer_Zx-master/bitmain_firmware/"
-                "Antminer-Z15j-user-release-202012141801/fw/BOOT.bin";
-        }
-    }
+    std::string real_zynq7000_path = "samples/antminer-z15j-boot.bin";
+
     if (!real_zynq7000_path.empty()) {
         test_real_zynq7000_boot_bin(real_zynq7000_path);
+    }
+
+    // Probe all samples in the samples/ directory
+    const char* sample_files[] = {
+        "samples/antminer-z11-boot.bin",
+        "samples/antminer-z11e-boot.bin",
+        "samples/antminer-z11j-boot.bin",
+        "samples/antminer-z15-boot.bin",
+        "samples/antminer-z15-pro-boot.bin",
+        "samples/antminer-z15e-boot.bin",
+        "samples/antminer-z11-recovery-boot.bin",
+        "samples/antminer-z15-recovery-boot.bin",
+        "samples/antminer-z15-pro-recovery-boot.bin",
+    };
+
+    for (const auto& path : sample_files) {
+        auto reader_opt = FileReader::open(path);
+        if (!reader_opt) {
+            std::cout << "[SKIP] " << path << ": cannot open" << std::endl;
+            continue;
+        }
+        auto& reader = *reader_opt;
+        std::cout << "[INFO] Probing " << path << " (" << reader.data.size() << " bytes)" << std::endl;
+
+        std::vector<std::string> log_messages;
+        auto logger = [&log_messages](const std::string& msg) {
+            log_messages.push_back(msg);
+        };
+
+        auto img = parse_image(reader, logger);
+
+        std::cout << "  arch=" << static_cast<int>(img.arch)
+                  << " format=\"" << img.format_name << "\""
+                  << " proc=\"" << img.processor_name << "\""
+                  << " load_supported=" << img.load_supported
+                  << " partitions=" << img.partitions.size()
+                  << std::endl;
+
+        assert(img.arch == Arch::Zynq7000);
+        assert(img.load_supported);
+        assert(img.processor_name == "arm");
+        assert(img.processor_selection.family == ProcessorFamily::Arm);
+        assert(img.processor_selection.arm_bitness_hint == ArmBitnessHint::AArch32);
+        assert(img.boot_header.present);
+        assert(img.partitions.size() >= 2);
+
+        std::cout << "  BH: fsbl_off=0x" << std::hex << img.bootloader_offset
+                  << " fsbl_size=0x" << img.bootloader_size
+                  << " load=0x" << img.bootloader_load_address
+                  << " exec=0x" << img.bootloader_exec_address
+                  << std::dec << std::endl;
+
+        for (size_t i = 0; i < img.partitions.size(); i++) {
+            const auto& p = img.partitions[i];
+            std::cout << "  [" << i << "] name=\"" << p.name << "\""
+                      << " load=0x" << std::hex << p.load_address
+                      << " exec=0x" << p.exec_address
+                      << " off=0x" << p.data_offset
+                      << " size=0x" << p.data_size
+                      << " dev=" << static_cast<int>(p.destination_device)
+                      << " type=" << static_cast<int>(p.partition_type)
+                      << " proc=" << static_cast<int>(p.processor_family)
+                      << " enc=" << p.is_encrypted
+                      << std::dec << std::endl;
+
+            // Every PS partition should be ARM/AArch32
+            if (p.destination_device == DestinationDevice::PS) {
+                assert(p.processor_family == ProcessorFamily::Arm);
+                assert(p.arm_bitness_hint == ArmBitnessHint::AArch32);
+            }
+            // PL partitions should not be tagged ARM
+            if (p.destination_device == DestinationDevice::PL) {
+                assert(p.processor_family == ProcessorFamily::Unknown);
+            }
+            // No partition should be encrypted in these samples
+            assert(!p.is_encrypted);
+        }
+
+        if (!img.warnings.empty()) {
+            std::cout << "  Warnings (" << img.warnings.size() << "):" << std::endl;
+            for (const auto& w : img.warnings) {
+                std::cout << "    - " << w << std::endl;
+            }
+        }
+
+        std::cout << "[OK] " << path << std::endl;
     }
 
     std::cout << "All headless tests passed!" << std::endl;
