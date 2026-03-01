@@ -42,7 +42,10 @@ install-loader: loader
 	dst="$(IDA_LOADERS_DIR)/$(LOADER_NAME).$$ext"; \
 	cp "$$src" "$$dst"; \
 	if [ "$$ext" = "dylib" ] && [ "$$(uname -s)" = "Darwin" ]; then \
-		codesign -s - "$$dst"; \
+		echo "Ad-hoc signing $$dst"; \
+		codesign --force --sign - "$$dst"; \
+		echo "Code signature details:"; \
+		codesign -dv "$$dst"; \
 	fi; \
 	echo "Installed $$dst"
 
