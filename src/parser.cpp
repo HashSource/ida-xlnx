@@ -271,6 +271,238 @@ std::string unpack_image_name(Reader& reader, uint32_t image_header_offset) {
     return result;
 }
 
+static void parse_zynq7000(Reader& reader, ParsedImage& img, LogCallback logger) {
+    zynq7000::BootHeader bh;
+    if (!reader.read_bytes(0, &bh, sizeof(bh))) {
+        return;
+    }
+
+    img.bootloader_exec_address = bh.fsbl_execution_address;
+    img.bootloader_load_address = bh.fsbl_load_address;
+    img.bootloader_offset = bh.source_offset;
+    img.bootloader_size = bh.fsbl_image_length;
+
+    if (logger) {
+        char msg[128] = {0};
+        std::snprintf(msg, sizeof(msg), "Zynq 7000 Boot Header parsed. FSBL Exec: 0x%08X\n",
+                      static_cast<unsigned int>(img.bootloader_exec_address));
+        logger(msg);
+    }
+
+    uint32_t iht_offset = bh.image_header_table_offset;
+    uint32_t version = reader.read_u32(iht_offset);
+    uint32_t actual_iht_offset = 0;
+    if (version == 0x01020000 || version == 0x01010000) {
+        actual_iht_offset = iht_offset;
+    } else {
+        version = reader.read_u32(iht_offset * 4);
+        if (version == 0x01020000 || version == 0x01010000) {
+            actual_iht_offset = iht_offset * 4;
+        }
+    }
+
+    if (actual_iht_offset == 0 || actual_iht_offset == 0xFFFFFFFF) {
+        return;
+    }
+
+    zynq7000::ImageHeaderTable iht;
+    if (!reader.read_bytes(actual_iht_offset, &iht, sizeof(iht))) {
+        return;
+    }
+
+    uint32_t ph_offset = iht.first_partition_header_offset * 4;
+    uint32_t count = 0;
+    while (ph_offset != 0 && ph_offset != 0xFFFFFFFF && count < 32) {
+        zynq7000::PartitionHeader ph;
+        if (!reader.read_bytes(ph_offset, &ph, sizeof(ph))) {
+            break;
+        }
+
+        if ((ph.unencrypted_partition_length == 0 && ph.total_partition_word_length == 0) ||
+            ph.unencrypted_partition_length == 0xFFFFFFFF) {
+            break;
+        }
+
+        PartitionInfo pinfo;
+        pinfo.load_address = ph.destination_load_address;
+        pinfo.exec_address = ph.destination_execution_address;
+        pinfo.data_offset = ph.data_word_offset * 4;
+        pinfo.data_size = ph.unencrypted_partition_length * 4;
+        pinfo.name = unpack_image_name(reader, ph.image_header_word_offset * 4);
+        if (pinfo.name.empty()) {
+            pinfo.name = "PART_" + std::to_string(count);
+        }
+
+        img.partitions.push_back(pinfo);
+        ph_offset += sizeof(zynq7000::PartitionHeader);
+        count++;
+    }
+}
+
+static void parse_zynqmp(Reader& reader, ParsedImage& img, LogCallback logger) {
+    zynqmp::BootHeader bh;
+    if (!reader.read_bytes(0, &bh, sizeof(bh))) {
+        return;
+    }
+
+    img.bootloader_exec_address = bh.fsbl_execution_address;
+    img.bootloader_load_address = bh.fsbl_execution_address;
+    img.bootloader_offset = bh.source_offset;
+    img.bootloader_size = bh.fsbl_image_length;
+
+    if (logger) {
+        char msg[128] = {0};
+        std::snprintf(msg, sizeof(msg), "ZynqMP Boot Header parsed. FSBL Exec: 0x%08X\n",
+                      static_cast<unsigned int>(img.bootloader_exec_address));
+        logger(msg);
+    }
+
+    uint32_t iht_offset = bh.image_header_table_offset;
+    uint32_t version = reader.read_u32(iht_offset);
+    uint32_t actual_iht_offset = 0;
+    if (version == 0x01020000 || version == 0x01010000) {
+        actual_iht_offset = iht_offset;
+    } else {
+        version = reader.read_u32(iht_offset * 4);
+        if (version == 0x01020000 || version == 0x01010000) {
+            actual_iht_offset = iht_offset * 4;
+        }
+    }
+
+    if (actual_iht_offset == 0 || actual_iht_offset == 0xFFFFFFFF) {
+        return;
+    }
+
+    zynqmp::ImageHeaderTable iht;
+    if (!reader.read_bytes(actual_iht_offset, &iht, sizeof(iht))) {
+        return;
+    }
+
+    uint32_t ph_offset = iht.first_partition_header_offset * 4;
+    uint32_t count = 0;
+    while (ph_offset != 0 && ph_offset != 0xFFFFFFFF && count < 32) {
+        zynqmp::PartitionHeader ph;
+        if (!reader.read_bytes(ph_offset, &ph, sizeof(ph))) {
+            break;
+        }
+
+        if ((ph.unencrypted_data_word_length == 0 && ph.total_partition_word_length == 0) ||
+            ph.unencrypted_data_word_length == 0xFFFFFFFF) {
+            break;
+        }
+
+        PartitionInfo pinfo;
+        pinfo.load_address = (static_cast<uint64_t>(ph.destination_load_address_hi) << 32) | ph.destination_load_address_lo;
+        pinfo.exec_address = (static_cast<uint64_t>(ph.destination_execution_address_hi) << 32) | ph.destination_execution_address_lo;
+        pinfo.data_offset = ph.actual_partition_word_offset * 4;
+        pinfo.data_size = ph.unencrypted_data_word_length * 4;
+        pinfo.name = unpack_image_name(reader, ph.image_header_word_offset * 4);
+        if (pinfo.name.empty()) {
+            pinfo.name = "PART_" + std::to_string(count);
+        }
+
+        img.partitions.push_back(pinfo);
+        ph_offset = ph.next_partition_header_offset * 4;
+        count++;
+    }
+}
+
+static void parse_versal_gen1(Reader& reader, ParsedImage& img, LogCallback logger) {
+    versal::BootHeader bh;
+    if (!reader.read_bytes(0, &bh, sizeof(bh))) {
+        return;
+    }
+
+    if (logger) {
+        logger("Versal Gen1 Boot Header parsed. PLM Exec: 0xF0280000\n");
+    }
+
+    if (bh.plm_length > 0 && bh.plm_length != 0xFFFFFFFF) {
+        PartitionInfo plm;
+        plm.load_address = 0xF0280000;
+        plm.exec_address = 0xF0280000;
+        plm.data_offset = bh.plm_source_offset;
+        plm.data_size = bh.plm_length;
+        plm.name = "PLM";
+        img.partitions.push_back(plm);
+    }
+
+    if (bh.pmc_data_length > 0 && bh.pmc_data_length != 0xFFFFFFFF && bh.pmc_data_load_address != 0xFFFFFFFF) {
+        PartitionInfo data;
+        data.load_address = bh.pmc_data_load_address;
+        data.exec_address = 0;
+        data.data_offset = bh.plm_source_offset + bh.total_plm_length;
+        data.data_size = bh.pmc_data_length;
+        data.name = "PMC_DATA";
+        img.partitions.push_back(data);
+    }
+
+    if (bh.meta_header_offset == 0 || bh.meta_header_offset == 0xFFFFFFFF) {
+        return;
+    }
+
+    versal::ImageHeaderTable iht;
+    if (!reader.read_bytes(bh.meta_header_offset, &iht, sizeof(iht))) {
+        return;
+    }
+
+    uint32_t ph_offset = iht.partition_header_offset * 4;
+    uint32_t count = 0;
+    while (ph_offset != 0 && ph_offset != 0xFFFFFFFF && count < 32) {
+        versal::PartitionHeader ph;
+        if (!reader.read_bytes(ph_offset, &ph, sizeof(ph))) {
+            break;
+        }
+
+        if ((ph.unencrypted_data_word_length == 0 && ph.total_partition_word_length == 0) ||
+            ph.unencrypted_data_word_length == 0xFFFFFFFF) {
+            break;
+        }
+
+        PartitionInfo pinfo;
+        pinfo.load_address = (static_cast<uint64_t>(ph.destination_load_address_hi) << 32) | ph.destination_load_address_lo;
+        pinfo.exec_address = (static_cast<uint64_t>(ph.destination_execution_address_hi) << 32) | ph.destination_execution_address_lo;
+        pinfo.data_offset = ph.actual_partition_word_offset * 4;
+        pinfo.data_size = ph.unencrypted_data_word_length * 4;
+        pinfo.name = "PDI_PART_" + std::to_string(count);
+
+        img.partitions.push_back(pinfo);
+        ph_offset = ph.next_partition_header_offset * 4;
+        count++;
+    }
+}
+
+static void parse_spartan(Reader& reader, ParsedImage& img, LogCallback logger) {
+    (void)img;
+
+    uint32_t source_offset = 0;
+    uint32_t plm_length = 0;
+    read_u32_at(reader, 0x1C, source_offset);
+    read_u32_at(reader, 0x2C, plm_length);
+
+    if (logger) {
+        char msg[192] = {0};
+        std::snprintf(msg, sizeof(msg),
+                      "Spartan UltraScale+ parse entry point reached (source=0x%08X, plm_len=0x%08X). Detailed partition parsing pending.\n",
+                      source_offset, plm_length);
+        logger(msg);
+    }
+}
+
+static void parse_versal_gen2(Reader& reader, ParsedImage& img, LogCallback logger) {
+    (void)img;
+
+    VersalGen2Probe probe = probe_versal_gen2(reader);
+    if (logger) {
+        char msg[192] = {0};
+        std::snprintf(msg, sizeof(msg),
+                      "Versal Gen2 parse entry point reached (iht_valid=%u, iht_offset=0x%08X). Detailed partition parsing pending.\n",
+                      probe.iht_layout_valid ? 1U : 0U,
+                      probe.iht_offset);
+        logger(msg);
+    }
+}
+
 ParsedImage parse_image(Reader& reader, LogCallback logger) {
     ParsedImage img;
 
@@ -293,167 +525,26 @@ ParsedImage parse_image(Reader& reader, LogCallback logger) {
     img.format_name = format_name_for_arch(img.arch);
     img.processor_name = "arm";
 
-    if (img.arch == Arch::Zynq7000) {
-        zynq7000::BootHeader bh;
-        if (!reader.read_bytes(0, &bh, sizeof(bh))) return img;
-
-        img.bootloader_exec_address = bh.fsbl_execution_address;
-        img.bootloader_load_address = bh.fsbl_load_address;
-        img.bootloader_offset = bh.source_offset;
-        img.bootloader_size = bh.fsbl_image_length;
-
-        if (logger) {
-            char msg[128] = {0};
-            std::snprintf(msg, sizeof(msg), "Zynq 7000 Boot Header parsed. FSBL Exec: 0x%08X\n",
-                          static_cast<unsigned int>(img.bootloader_exec_address));
-            logger(msg);
-        }
-
-        uint32_t iht_offset = bh.image_header_table_offset;
-        uint32_t version = reader.read_u32(iht_offset);
-        uint32_t actual_iht_offset = 0;
-        if (version == 0x01020000 || version == 0x01010000) {
-            actual_iht_offset = iht_offset;
-        } else {
-            version = reader.read_u32(iht_offset * 4);
-            if (version == 0x01020000 || version == 0x01010000) {
-                actual_iht_offset = iht_offset * 4;
-            }
-        }
-
-        if (actual_iht_offset != 0 && actual_iht_offset != 0xFFFFFFFF) {
-            zynq7000::ImageHeaderTable iht;
-            if (reader.read_bytes(actual_iht_offset, &iht, sizeof(iht))) {
-                uint32_t ph_offset = iht.first_partition_header_offset * 4;
-                uint32_t count = 0;
-                while (ph_offset != 0 && ph_offset != 0xFFFFFFFF && count < 32) {
-                    zynq7000::PartitionHeader ph;
-                    if (!reader.read_bytes(ph_offset, &ph, sizeof(ph))) break;
-                    
-                    if ((ph.unencrypted_partition_length == 0 && ph.total_partition_word_length == 0) || 
-                        ph.unencrypted_partition_length == 0xFFFFFFFF) break;
-
-                    PartitionInfo pinfo;
-                    pinfo.load_address = ph.destination_load_address;
-                    pinfo.exec_address = ph.destination_execution_address;
-                    pinfo.data_offset = ph.data_word_offset * 4;
-                    pinfo.data_size = ph.unencrypted_partition_length * 4;
-                    pinfo.name = unpack_image_name(reader, ph.image_header_word_offset * 4);
-                    if (pinfo.name.empty()) pinfo.name = "PART_" + std::to_string(count);
-
-                    img.partitions.push_back(pinfo);
-                    ph_offset += sizeof(zynq7000::PartitionHeader);
-                    count++;
-                }
-            }
-        }
-    } 
-    else if (img.arch == Arch::ZynqMP) {
-        zynqmp::BootHeader bh;
-        if (!reader.read_bytes(0, &bh, sizeof(bh))) return img;
-
-        img.bootloader_exec_address = bh.fsbl_execution_address;
-        img.bootloader_load_address = bh.fsbl_execution_address;
-        img.bootloader_offset = bh.source_offset;
-        img.bootloader_size = bh.fsbl_image_length;
-
-        if (logger) {
-            char msg[128] = {0};
-            std::snprintf(msg, sizeof(msg), "ZynqMP Boot Header parsed. FSBL Exec: 0x%08X\n",
-                          static_cast<unsigned int>(img.bootloader_exec_address));
-            logger(msg);
-        }
-
-        uint32_t iht_offset = bh.image_header_table_offset;
-        uint32_t version = reader.read_u32(iht_offset);
-        uint32_t actual_iht_offset = 0;
-        if (version == 0x01020000 || version == 0x01010000) {
-            actual_iht_offset = iht_offset;
-        } else {
-            version = reader.read_u32(iht_offset * 4);
-            if (version == 0x01020000 || version == 0x01010000) {
-                actual_iht_offset = iht_offset * 4;
-            }
-        }
-
-        if (actual_iht_offset != 0 && actual_iht_offset != 0xFFFFFFFF) {
-            zynqmp::ImageHeaderTable iht;
-            if (reader.read_bytes(actual_iht_offset, &iht, sizeof(iht))) {
-                uint32_t ph_offset = iht.first_partition_header_offset * 4;
-                uint32_t count = 0;
-                while (ph_offset != 0 && ph_offset != 0xFFFFFFFF && count < 32) {
-                    zynqmp::PartitionHeader ph;
-                    if (!reader.read_bytes(ph_offset, &ph, sizeof(ph))) break;
-                    
-                    if ((ph.unencrypted_data_word_length == 0 && ph.total_partition_word_length == 0) || 
-                        ph.unencrypted_data_word_length == 0xFFFFFFFF) break;
-
-                    PartitionInfo pinfo;
-                    pinfo.load_address = (static_cast<uint64_t>(ph.destination_load_address_hi) << 32) | ph.destination_load_address_lo;
-                    pinfo.exec_address = (static_cast<uint64_t>(ph.destination_execution_address_hi) << 32) | ph.destination_execution_address_lo;
-                    pinfo.data_offset = ph.actual_partition_word_offset * 4;
-                    pinfo.data_size = ph.unencrypted_data_word_length * 4;
-                    pinfo.name = unpack_image_name(reader, ph.image_header_word_offset * 4);
-                    if (pinfo.name.empty()) pinfo.name = "PART_" + std::to_string(count);
-
-                    img.partitions.push_back(pinfo);
-                    ph_offset = ph.next_partition_header_offset * 4;
-                    count++;
-                }
-            }
-        }
-    }
-    else if (img.arch == Arch::PDI || img.arch == Arch::VersalGen1) {
-        versal::BootHeader bh;
-        if (!reader.read_bytes(0, &bh, sizeof(bh))) return img;
-
-        if (logger) logger("PDI Boot Header parsed. PLM Exec: 0xF0280000\n");
-
-        if (bh.plm_length > 0 && bh.plm_length != 0xFFFFFFFF) {
-            PartitionInfo plm;
-            plm.load_address = 0xF0280000;
-            plm.exec_address = 0xF0280000;
-            plm.data_offset = bh.plm_source_offset;
-            plm.data_size = bh.plm_length;
-            plm.name = "PLM";
-            img.partitions.push_back(plm);
-        }
-
-        if (bh.pmc_data_length > 0 && bh.pmc_data_length != 0xFFFFFFFF && bh.pmc_data_load_address != 0xFFFFFFFF) {
-            PartitionInfo data;
-            data.load_address = bh.pmc_data_load_address;
-            data.exec_address = 0;
-            data.data_offset = bh.plm_source_offset + bh.total_plm_length;
-            data.data_size = bh.pmc_data_length;
-            data.name = "PMC_DATA";
-            img.partitions.push_back(data);
-        }
-
-        if (bh.meta_header_offset != 0 && bh.meta_header_offset != 0xFFFFFFFF) {
-            versal::ImageHeaderTable iht;
-            if (reader.read_bytes(bh.meta_header_offset, &iht, sizeof(iht))) {
-                uint32_t ph_offset = iht.partition_header_offset * 4;
-                uint32_t count = 0;
-                while (ph_offset != 0 && ph_offset != 0xFFFFFFFF && count < 32) {
-                    versal::PartitionHeader ph;
-                    if (!reader.read_bytes(ph_offset, &ph, sizeof(ph))) break;
-                    
-                    if ((ph.unencrypted_data_word_length == 0 && ph.total_partition_word_length == 0) || 
-                        ph.unencrypted_data_word_length == 0xFFFFFFFF) break;
-
-                    PartitionInfo pinfo;
-                    pinfo.load_address = (static_cast<uint64_t>(ph.destination_load_address_hi) << 32) | ph.destination_load_address_lo;
-                    pinfo.exec_address = (static_cast<uint64_t>(ph.destination_execution_address_hi) << 32) | ph.destination_execution_address_lo;
-                    pinfo.data_offset = ph.actual_partition_word_offset * 4;
-                    pinfo.data_size = ph.unencrypted_data_word_length * 4;
-                    pinfo.name = "PDI_PART_" + std::to_string(count);
-
-                    img.partitions.push_back(pinfo);
-                    ph_offset = ph.next_partition_header_offset * 4;
-                    count++;
-                }
-            }
-        }
+    switch (img.arch) {
+        case Arch::Zynq7000:
+            parse_zynq7000(reader, img, logger);
+            break;
+        case Arch::ZynqMP:
+            parse_zynqmp(reader, img, logger);
+            break;
+        case Arch::VersalGen1:
+        case Arch::PDI:
+            parse_versal_gen1(reader, img, logger);
+            break;
+        case Arch::SpartanUltraScalePlus:
+            parse_spartan(reader, img, logger);
+            break;
+        case Arch::VersalGen2:
+            parse_versal_gen2(reader, img, logger);
+            break;
+        case Arch::Unknown:
+        default:
+            break;
     }
 
     return img;
