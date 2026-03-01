@@ -9,11 +9,38 @@ namespace xilinx {
 
 enum class Arch { Unknown, Zynq7000, ZynqMP, PDI, SpartanUltraScalePlus, VersalGen1, VersalGen2 };
 
+enum class ProcessorFamily {
+    Unknown,
+    Arm,
+    MicroBlaze,
+};
+
+enum class ArmBitnessHint {
+    Unknown,
+    AArch32,
+    AArch64,
+};
+
+enum class ProcessorInferenceConfidence {
+    Unknown,
+    Low,
+    Medium,
+    High,
+};
+
+struct ProcessorSelection {
+    ProcessorFamily family = ProcessorFamily::Unknown;
+    ArmBitnessHint arm_bitness_hint = ArmBitnessHint::Unknown;
+    ProcessorInferenceConfidence confidence = ProcessorInferenceConfidence::Unknown;
+    std::string source;
+};
+
 struct PartitionInfo {
     uint64_t load_address = 0;
     uint64_t exec_address = 0;
     uint64_t data_offset = 0;
     uint64_t data_size = 0;
+    ProcessorFamily processor_family = ProcessorFamily::Unknown;
     std::string name;
 };
 
@@ -21,6 +48,7 @@ struct ParsedImage {
     Arch arch = Arch::Unknown;
     std::string format_name;
     std::string processor_name;
+    ProcessorSelection processor_selection;
     bool load_supported = false;
     std::vector<std::string> warnings;
 

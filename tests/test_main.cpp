@@ -39,6 +39,11 @@ void test_zynq7000_detection() {
     assert(img.arch == Arch::Zynq7000);
     assert(img.format_name == "Xilinx Zynq 7000 Boot Image");
     assert(img.load_supported);
+    assert(img.processor_name == "arm");
+    assert(img.processor_selection.family == ProcessorFamily::Arm);
+    assert(img.processor_selection.arm_bitness_hint == ArmBitnessHint::AArch32);
+    assert(img.processor_selection.confidence == ProcessorInferenceConfidence::High);
+    assert(img.processor_selection.source == "arch_default:zynq7000_boot_header");
     std::cout << "[OK] zynq7000_detection" << std::endl;
 }
 
@@ -53,6 +58,11 @@ void test_zynqmp_detection() {
     assert(img.arch == Arch::ZynqMP);
     assert(img.format_name == "Xilinx Zynq UltraScale+ MPSoC Boot Image");
     assert(img.load_supported);
+    assert(img.processor_name == "arm");
+    assert(img.processor_selection.family == ProcessorFamily::Arm);
+    assert(img.processor_selection.arm_bitness_hint == ArmBitnessHint::Unknown);
+    assert(img.processor_selection.confidence == ProcessorInferenceConfidence::Medium);
+    assert(img.processor_selection.source == "arch_default:zynqmp_without_partition_attr_decode");
     std::cout << "[OK] zynqmp_detection" << std::endl;
 }
 
@@ -65,6 +75,10 @@ void test_versal_detection() {
     uint32_t* words = reinterpret_cast<uint32_t*>(reader.data.data() + 0x10);
     words[0] = 0xAA995566;
     words[1] = 0x584C4E58; // XNLX
+    auto* bh = reinterpret_cast<versal::BootHeader*>(reader.data.data());
+    bh->plm_source_offset = 0x200;
+    bh->plm_length = 0x40;
+    bh->total_plm_length = 0x40;
     write_u32(0xC4, 0x1000); // meta header offset (bytes)
 
     write_u32(0x1000 + 0x00, 0x00040000); // Gen1 IHT version
@@ -78,6 +92,11 @@ void test_versal_detection() {
     assert(img.arch == Arch::VersalGen1);
     assert(img.format_name == "Xilinx Versal Adaptive SoC Gen 1 PDI");
     assert(img.load_supported);
+    assert(img.processor_name == "mblaze");
+    assert(img.processor_selection.family == ProcessorFamily::MicroBlaze);
+    assert(img.processor_selection.arm_bitness_hint == ArmBitnessHint::Unknown);
+    assert(img.processor_selection.confidence == ProcessorInferenceConfidence::High);
+    assert(img.processor_selection.source == "partition_context:versal_plm_ppu_microblaze_default");
     std::cout << "[OK] versal_detection" << std::endl;
 }
 
@@ -99,6 +118,8 @@ void test_spartan_detection() {
     assert(img.arch == Arch::SpartanUltraScalePlus);
     assert(img.format_name == "Xilinx Spartan UltraScale+ PDI");
     assert(!img.load_supported);
+    assert(img.processor_name.empty());
+    assert(img.processor_selection.family == ProcessorFamily::Unknown);
     assert(!img.warnings.empty());
     std::cout << "[OK] spartan_detection" << std::endl;
 }
@@ -130,6 +151,8 @@ void test_versal_gen2_detection() {
     assert(img.arch == Arch::VersalGen2);
     assert(img.format_name == "Xilinx Versal AI Edge/Prime Gen 2 PDI");
     assert(!img.load_supported);
+    assert(img.processor_name.empty());
+    assert(img.processor_selection.family == ProcessorFamily::Unknown);
     assert(!img.warnings.empty());
     std::cout << "[OK] versal_gen2_detection" << std::endl;
 }
@@ -143,6 +166,8 @@ void test_weak_pdi_rejected() {
     auto img = parse_image(reader);
     assert(img.arch == Arch::Unknown);
     assert(!img.load_supported);
+    assert(img.processor_name.empty());
+    assert(img.processor_selection.family == ProcessorFamily::Unknown);
     std::cout << "[OK] weak_pdi_rejected" << std::endl;
 }
 
@@ -232,9 +257,12 @@ void test_versal_partitions() {
     auto img = parse_image(reader);
     assert(img.arch == Arch::VersalGen1);
     assert(img.load_supported);
+    assert(img.processor_name == "mblaze");
+    assert(img.processor_selection.family == ProcessorFamily::MicroBlaze);
     assert(img.partitions.size() == 3); // PLM + PMC + Partition
     
     assert(img.partitions[0].name == "PLM");
+    assert(img.partitions[0].processor_family == ProcessorFamily::MicroBlaze);
     assert(img.partitions[0].load_address == 0xF0280000);
     assert(img.partitions[0].data_size == 0x2000);
     

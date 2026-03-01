@@ -31,6 +31,44 @@ static void add_warning(ParsedImage& img, LogCallback logger, const std::string&
     }
 }
 
+static const char* ida_processor_name_for_family(ProcessorFamily family) {
+    switch (family) {
+        case ProcessorFamily::Arm:
+            return "arm";
+        case ProcessorFamily::MicroBlaze:
+            return "mblaze";
+        case ProcessorFamily::Unknown:
+        default:
+            return "";
+    }
+}
+
+static void set_processor_selection(ParsedImage& img,
+                                    ProcessorFamily family,
+                                    ArmBitnessHint arm_bitness_hint,
+                                    ProcessorInferenceConfidence confidence,
+                                    const std::string& source) {
+    img.processor_selection.family = family;
+    img.processor_selection.arm_bitness_hint = arm_bitness_hint;
+    img.processor_selection.confidence = confidence;
+    img.processor_selection.source = source;
+    img.processor_name = ida_processor_name_for_family(family);
+}
+
+static void clear_processor_selection(ParsedImage& img) {
+    img.processor_selection = ProcessorSelection{};
+    img.processor_name.clear();
+}
+
+static bool has_microblaze_plm_partition(const ParsedImage& img) {
+    for (const auto& part : img.partitions) {
+        if (part.name == "PLM" && part.processor_family == ProcessorFamily::MicroBlaze) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool read_u32_at(Reader& reader, uint32_t offset, uint32_t& value) {
     return reader.read_bytes(offset, &value, sizeof(value));
 }
@@ -430,6 +468,7 @@ static void parse_versal_gen1(Reader& reader, ParsedImage& img, LogCallback logg
         plm.exec_address = 0xF0280000;
         plm.data_offset = bh.plm_source_offset;
         plm.data_size = bh.plm_length;
+        plm.processor_family = ProcessorFamily::MicroBlaze;
         plm.name = "PLM";
         img.partitions.push_back(plm);
     }
@@ -534,18 +573,37 @@ ParsedImage parse_image(Reader& reader, LogCallback logger) {
     switch (img.arch) {
         case Arch::Zynq7000:
             img.load_supported = true;
-            img.processor_name = "arm";
+            set_processor_selection(img,
+                                    ProcessorFamily::Arm,
+                                    ArmBitnessHint::AArch32,
+                                    ProcessorInferenceConfidence::High,
+                                    "arch_default:zynq7000_boot_header");
             parse_zynq7000(reader, img, logger);
             break;
         case Arch::ZynqMP:
             img.load_supported = true;
-            img.processor_name = "arm";
+            set_processor_selection(img,
+                                    ProcessorFamily::Arm,
+                                    ArmBitnessHint::Unknown,
+                                    ProcessorInferenceConfidence::Medium,
+                                    "arch_default:zynqmp_without_partition_attr_decode");
             parse_zynqmp(reader, img, logger);
             break;
         case Arch::VersalGen1:
             img.load_supported = true;
-            img.processor_name = "arm";
+            set_processor_selection(img,
+                                    ProcessorFamily::Arm,
+                                    ArmBitnessHint::Unknown,
+                                    ProcessorInferenceConfidence::Low,
+                                    "legacy_fallback:versal_gen1_until_destination_cpu_decode");
             parse_versal_gen1(reader, img, logger);
+            if (has_microblaze_plm_partition(img)) {
+                set_processor_selection(img,
+                                        ProcessorFamily::MicroBlaze,
+                                        ArmBitnessHint::Unknown,
+                                        ProcessorInferenceConfidence::High,
+                                        "partition_context:versal_plm_ppu_microblaze_default");
+            }
             break;
         case Arch::PDI:
             add_warning(img, logger,
@@ -567,7 +625,7 @@ ParsedImage parse_image(Reader& reader, LogCallback logger) {
     }
 
     if (!img.load_supported) {
-        img.processor_name.clear();
+        clear_processor_selection(img);
     }
 
     return img;
